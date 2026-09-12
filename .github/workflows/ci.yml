@@ -1,0 +1,12 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --directory apple-reminders-mcp-server --locked --all-extras
+      - run: apple-reminders-mcp-server/.venv/bin/ruff check apple-reminders-mcp-server/src tests
+      - run: ICLOUD_USERNAME=test@example.com CONFIRMATION_SIGNING_SECRET=01234567890123456789012345678901 apple-reminders-mcp-server/.venv/bin/pytest tests
+      - run: bash -n setup.sh auth.sh start.sh stop.sh autostart.sh

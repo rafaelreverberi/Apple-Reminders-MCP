@@ -1,0 +1,13 @@
+.env
+.venv/
+apple-reminders-mcp-server/.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+logs/*
+!logs/.gitkeep
+state/*
+!state/.gitkeep
+.run/
+

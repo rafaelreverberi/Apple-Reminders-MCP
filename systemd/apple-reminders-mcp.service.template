@@ -1,0 +1,26 @@
+[Unit]
+Description=Apple Reminders MCP and OpenAI Secure Tunnel
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@@USER@@
+Group=@@GROUP@@
+Environment=HOME=@@HOME@@
+WorkingDirectory=@@ROOT@@
+ExecStart=@@ROOT@@/start.sh
+ExecStop=@@ROOT@@/stop.sh
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=@@ROOT@@/logs @@ROOT@@/state @@ROOT@@/.run
+
+[Install]
+WantedBy=multi-user.target
