@@ -383,6 +383,8 @@ class RemindersService:
         flagged: bool | None = None,
         priority: str | int | None = None,
         parent_reminder_id: str | None = None,
+        *,
+        _search_needle: str | None = None,
     ) -> list[dict[str, Any]]:
         self.rate.check("read")
         limit = min(max(1, limit), self.settings.max_reminders)
@@ -431,6 +433,16 @@ class RemindersService:
                 failed_lists.append(exc)
                 continue
 
+            hashtags_by_reminder: dict[str, list[str]] = {}
+            if _search_needle is not None:
+                batch_hashtags = _attr(batch, "hashtags", {})
+                if isinstance(batch_hashtags, dict):
+                    for hashtag in batch_hashtags.values():
+                        reminder_id = _attr(hashtag, "reminder_id")
+                        name = _attr(hashtag, "name")
+                        if reminder_id and name:
+                            hashtags_by_reminder.setdefault(str(reminder_id), []).append(str(name))
+
             successful_lists += 1
             for record_index, item in enumerate(batch_items):
                 try:
@@ -448,6 +460,16 @@ class RemindersService:
                         and _attr(item, "parent_reminder_id") != parent_reminder_id
                     ):
                         continue
+                    if _search_needle is not None:
+                        searchable = "\n".join(
+                            (
+                                str(_attr(item, "title", "") or ""),
+                                str(_attr(item, "desc", "") or ""),
+                                " ".join(hashtags_by_reminder.get(str(_attr(item, "id")), [])),
+                            )
+                        )
+                        if _search_needle not in searchable.casefold():
+                            continue
                     results.append(reminder_payload(item, self.settings.timezone))
                 except Exception:
                     LOGGER.exception(
@@ -486,14 +508,7 @@ class RemindersService:
         needle = query.strip().casefold()
         if not needle:
             raise AppError("INVALID_QUERY", "Search query must not be empty")
-        items = self.list_items(**filters)
-        matches = []
-        for payload in items:
-            item = self._get(payload["reminder_id"])
-            tags = " ".join(t["name"] for t in self.list_tags(item.id))
-            if needle in f"{item.title}\n{_attr(item, 'desc', '')}\n{tags}".casefold():
-                matches.append(payload)
-        return matches
+        return self.list_items(_search_needle=needle, **filters)
 
     def get_item(self, reminder_id: str) -> dict[str, Any]:
         self.rate.check("read")

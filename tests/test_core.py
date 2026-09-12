@@ -74,7 +74,12 @@ class FakeReminders:
             for x in self.items.values()
             if x.list_id == list_id and (include_completed or not x.completed)
         ]
-        return SimpleNamespace(reminders=rows[:results_limit])
+        hashtags = {
+            tag.id: tag
+            for item in rows
+            for tag in self.tags.get(item.id, [])
+        }
+        return SimpleNamespace(reminders=rows[:results_limit], hashtags=hashtags)
 
     def create(self, list_id, title, **kwargs):
         item = reminder(
@@ -203,6 +208,35 @@ def test_filters_subtasks_tags_and_attachments(service):
     attachment = service.add_url("r1", "https://example.com/page")
     assert attachment["type"] == "url"
     assert service.remove_attachment("r1", "a1")["removed"] is True
+
+
+def test_search_uses_compound_list_data_without_follow_up_lookups(settings):
+    class SearchReminders(FakeReminders):
+        def __init__(self):
+            super().__init__()
+            self.items["r1"] = reminder(title="Lernen", desc="Pruefung vorbereiten")
+            self.tags["r1"] = [
+                SimpleNamespace(
+                    id="tag-school",
+                    reminder_id="r1",
+                    name="Schule",
+                    created=None,
+                )
+            ]
+
+        def get(self, reminder_id):
+            raise RemindersApiError("HTTP 502 from follow-up reminder lookup")
+
+        def tags_for(self, item):
+            raise RemindersApiError("HTTP 502 from follow-up hashtag lookup")
+
+    api = SimpleNamespace(reminders=SearchReminders())
+    svc = RemindersService(settings, service_factory=lambda _: api)
+
+    assert [item["reminder_id"] for item in svc.search("lernen")] == ["r1"]
+    assert [item["reminder_id"] for item in svc.search("pruefung")] == ["r1"]
+    assert [item["reminder_id"] for item in svc.search("schule")] == ["r1"]
+    assert svc.search("nicht vorhanden") == []
 
 
 def test_prepare_delete_token_replay_and_revision_binding(service):
