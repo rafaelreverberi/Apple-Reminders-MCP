@@ -3,8 +3,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
-for cmd in python3 uv curl openssl; do command -v "$cmd" >/dev/null 2>&1 || fail "required command not found: $cmd"; done
-python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' || fail "Python 3.11+ is required"
+for cmd in uv curl openssl; do command -v "$cmd" >/dev/null 2>&1 || fail "required command not found: $cmd"; done
+PYTHON_BIN="$(uv python find '>=3.11' 2>/dev/null)" || \
+  fail "Python 3.11+ is required. Install it with: uv python install 3.11"
+"$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' || \
+  fail "Python 3.11+ is required. Install it with: uv python install 3.11"
 if [ "$(uname -s)" = Linux ] && [ -r /etc/os-release ]; then
   . /etc/os-release
   case "${ID_LIKE:-$ID}" in *debian*) ;; *) printf 'Warning: scripts are tested for Debian-compatible Linux.\n' ;; esac
@@ -18,4 +21,3 @@ if ! command -v tunnel-client >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/tunnel
   printf 'Warning: tunnel-client not found; install the current Raspberry Pi build before start.\n'
 fi
 printf '\nApple Reminders MCP setup complete.\n\nNext:\n1. Edit .env\n2. Set ICLOUD_USERNAME\n3. Generate CONFIRMATION_SIGNING_SECRET with: openssl rand -base64 48\n4. Set OpenAI Secure Tunnel credentials\n5. Run ./auth.sh login\n6. Run ./start.sh\n'
-
