@@ -2,7 +2,6 @@ import os
 import ssl
 
 import certifi
-
 from apple_reminders_mcp.auth import _install_default_request_timeout, ensure_ca_bundle
 
 

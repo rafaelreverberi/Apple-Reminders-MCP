@@ -4,7 +4,6 @@ import os
 import uuid
 
 import pytest
-
 from apple_reminders_mcp.config import Settings
 from apple_reminders_mcp.reminders import RemindersService
 
@@ -44,5 +43,5 @@ def test_designated_list_round_trip():
         if created_id:
             try:
                 svc.reminders.delete(svc.reminders.get(created_id))
-            except Exception:
+            except Exception:  # noqa: BLE001 - Emergency cleanup must remain best-effort.
                 print(f"Manual cleanup required for exact Reminder ID: {created_id}")

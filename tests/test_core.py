@@ -1,9 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-from pyicloud.services.reminders.client import RemindersApiError, RemindersAuthError
-from requests.exceptions import ConnectionError as RequestsConnectionError
-
 from apple_reminders_mcp.auth import sanitized_status
 from apple_reminders_mcp.config import LOOPBACK_HOSTS, Settings
 from apple_reminders_mcp.errors import AppError
@@ -13,6 +10,8 @@ from apple_reminders_mcp.normalization import (
     validate_url,
 )
 from apple_reminders_mcp.reminders import RemindersService
+from pyicloud.services.reminders.client import RemindersApiError, RemindersAuthError
+from requests.exceptions import ConnectionError as RequestsConnectionError
 
 
 def reminder(**values):
