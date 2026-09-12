@@ -41,11 +41,20 @@ def invoke(method: str, *args: Any, **kwargs: Any) -> Any:
         return getattr(service(), method)(*args, **kwargs)
     except AppError as exc:
         if exc.__cause__ is not None:
-            LOGGER.exception(
-                "MCP operation failed with classified internal exception operation=%s code=%s",
-                method,
-                exc.code,
-            )
+            if exc.code == "ICLOUD_DATA_ACCESS_APPROVAL_REQUIRED":
+                LOGGER.error(
+                    "MCP operation failed with classified internal exception operation=%s "
+                    "code=%s exception_type=%s",
+                    method,
+                    exc.code,
+                    type(exc.__cause__).__name__,
+                )
+            else:
+                LOGGER.exception(
+                    "MCP operation failed with classified internal exception operation=%s code=%s",
+                    method,
+                    exc.code,
+                )
         return exc.payload()
     except Exception:
         LOGGER.exception("Unexpected MCP operation failure operation=%s", method)
@@ -63,9 +72,7 @@ def health_payload() -> dict[str, Any]:
         "mcp": True,
         "configuration": "ok",
         "pyicloud_version": "2.7.0",
-        "icloud_session": "trusted"
-        if status.get("trusted_session")
-        else "reauthentication_required",
+        "icloud_session": status.get("session_state", "icloud_unavailable"),
         "reminders_service": "available" if available else "unavailable",
     }
 

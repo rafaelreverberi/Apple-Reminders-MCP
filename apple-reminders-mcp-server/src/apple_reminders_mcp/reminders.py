@@ -13,7 +13,12 @@ from requests.exceptions import Timeout as RequestsTimeout
 
 from .auth import create_saved_session
 from .config import Settings
-from .errors import AppError
+from .errors import (
+    AppError,
+    classify_icloud_error,
+    exception_chain,
+    is_icloud_data_access_approval_error,
+)
 from .normalization import (
     iso,
     parse_datetime,
@@ -80,14 +85,7 @@ class RemindersService:
 
     @staticmethod
     def _exception_chain(exc: BaseException) -> list[BaseException]:
-        chain: list[BaseException] = []
-        current: BaseException | None = exc
-        seen: set[int] = set()
-        while current is not None and id(current) not in seen:
-            chain.append(current)
-            seen.add(id(current))
-            current = current.__cause__ or current.__context__
-        return chain
+        return exception_chain(exc)
 
     @classmethod
     def _is_auth_error(cls, exc: BaseException) -> bool:
@@ -163,15 +161,17 @@ class RemindersService:
                 )
             except Exception as exc:
                 transient = self._is_transient_read_error(exc)
-                LOGGER.exception(
+                log = LOGGER.error if is_icloud_data_access_approval_error(exc) else LOGGER.exception
+                log(
                     "Reminders read failed stage=fetch_list scope=%s list_index=%d "
-                    "list_ref=%s attempt=%d/%d transient=%s",
+                    "list_ref=%s attempt=%d/%d transient=%s exception_type=%s",
                     request_scope,
                     list_index,
                     list_ref,
                     attempt,
                     _READ_ATTEMPTS,
                     transient,
+                    type(exc).__name__,
                 )
                 if not transient or attempt == _READ_ATTEMPTS:
                     raise
@@ -198,27 +198,7 @@ class RemindersService:
 
     @classmethod
     def _raise_remote(cls, exc: Exception) -> None:
-        chain = cls._exception_chain(exc)
-        names = " ".join(type(item).__name__ for item in chain).lower()
-        messages = " ".join(str(item) for item in chain).lower()
-        payloads = " ".join(repr(getattr(item, "payload", None)) for item in chain).lower()
-        if any(isinstance(item, RemindersAuthError) for item in chain) or any(
-            marker in messages for marker in ("http 401", "http 403")
-        ):
-            raise AppError(
-                "REAUTHENTICATION_REQUIRED", "iCloud authentication must be renewed"
-            ) from exc
-        if "rate" in names or "http 429" in messages or "retry_after" in payloads:
-            raise AppError("RATE_LIMITED", "Apple is rate limiting Reminders requests") from exc
-        if "terms" in names or "terms" in messages:
-            raise AppError(
-                "ICLOUD_TERMS_REQUIRED", "Updated iCloud terms require operator review"
-            ) from exc
-        if any(isinstance(item, (KeyError, LookupError)) for item in chain) or (
-            "not found" in messages
-        ):
-            raise AppError("REMINDER_NOT_FOUND", "Reminder was not found") from exc
-        raise AppError("ICLOUD_UNAVAILABLE", "iCloud Reminders is temporarily unavailable") from exc
+        raise classify_icloud_error(exc, include_not_found=True) from exc
 
     def _lists(self) -> list[Any]:
         for attempt in range(1, _READ_ATTEMPTS + 1):
@@ -234,11 +214,14 @@ class RemindersService:
                 if isinstance(exc, AppError) and exc.__cause__ is None:
                     raise
                 transient = self._is_transient_read_error(exc)
-                LOGGER.exception(
-                    "Reminders read failed stage=list_discovery attempt=%d/%d transient=%s",
+                log = LOGGER.error if is_icloud_data_access_approval_error(exc) else LOGGER.exception
+                log(
+                    "Reminders read failed stage=list_discovery attempt=%d/%d transient=%s "
+                    "exception_type=%s",
                     attempt,
                     _READ_ATTEMPTS,
                     transient,
+                    type(exc).__name__,
                 )
                 if not transient or attempt == _READ_ATTEMPTS:
                     if isinstance(exc, AppError):

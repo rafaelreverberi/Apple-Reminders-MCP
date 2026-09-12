@@ -103,6 +103,11 @@ If Apple requires updated legal terms, inspect `./auth.sh doctor` and consciousl
 run the pyicloud CLI's `auth login ... --accept-terms` operator flow. The MCP never
 accepts legal terms.
 
+If the MCP returns `ICLOUD_DATA_ACCESS_APPROVAL_REQUIRED`, approve Apple's
+temporary iCloud-data access popup on a trusted iPhone, iPad, or Mac, then retry
+the operation. This is distinct from an expired session: do not run
+`./auth.sh login` unless the MCP returns `REAUTHENTICATION_REQUIRED`.
+
 ## Start and health
 
 ```bash

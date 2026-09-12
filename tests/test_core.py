@@ -10,7 +10,13 @@ from apple_reminders_mcp.normalization import (
     validate_url,
 )
 from apple_reminders_mcp.reminders import RemindersService
+from pyicloud.exceptions import (
+    PyiCloudAcceptTermsException,
+    PyiCloudAPIResponseException,
+    PyiCloudPCSTimeoutException,
+)
 from pyicloud.services.reminders.client import RemindersApiError, RemindersAuthError
+from requests import Response
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
 
@@ -274,13 +280,43 @@ def test_session_status_valid_and_expired(settings):
     valid = sanitized_status(settings, lambda _: Valid())
     assert valid["reminders_available"] is True
     assert valid["requires_reauthentication"] is False
+    assert valid["requires_icloud_data_access_approval"] is False
+    assert valid["session_state"] == "trusted"
 
     def expired(_settings):
         raise AppError("REAUTHENTICATION_REQUIRED", "expired")
 
     invalid = sanitized_status(settings, expired)
     assert invalid["requires_reauthentication"] is True
+    assert invalid["requires_icloud_data_access_approval"] is False
+    assert invalid["error_code"] == "REAUTHENTICATION_REQUIRED"
+    assert invalid["session_state"] == "reauthentication_required"
     assert "operator_hint" in invalid
+
+
+def test_session_status_distinguishes_temporary_data_access_approval(settings):
+    class ApprovalPending:
+        def get_auth_status(self):
+            return {
+                "authenticated": True,
+                "trusted_session": True,
+                "requires_2fa": False,
+                "requires_2sa": False,
+            }
+
+        @property
+        def reminders(self):
+            raise PyiCloudPCSTimeoutException("Unable to request PCS access!")
+
+    status = sanitized_status(settings, lambda _: ApprovalPending())
+
+    assert status["authenticated"] is True
+    assert status["trusted_session"] is True
+    assert status["requires_reauthentication"] is False
+    assert status["requires_icloud_data_access_approval"] is True
+    assert status["session_state"] == "icloud_data_access_approval_required"
+    assert status["error_code"] == "ICLOUD_DATA_ACCESS_APPROVAL_REQUIRED"
+    assert status["reminders_available"] is False
 
 
 def test_write_switch_and_list_allowlist(settings):
@@ -527,6 +563,171 @@ def test_rate_limit_payload_is_classified_after_retries(settings):
         svc.list_items("l1")
 
     assert exc.value.code == "RATE_LIMITED"
+
+
+@pytest.mark.parametrize(
+    ("remote_error", "expected_code"),
+    [
+        (RemindersAuthError("HTTP 403: unauthorized"), "REAUTHENTICATION_REQUIRED"),
+        (RemindersApiError("HTTP 403"), "REAUTHENTICATION_REQUIRED"),
+        (PyiCloudAcceptTermsException("Updated terms must be accepted"), "ICLOUD_TERMS_REQUIRED"),
+        (RemindersApiError("unexpected Apple failure"), "ICLOUD_UNAVAILABLE"),
+    ],
+)
+def test_remote_error_classification_preserves_existing_codes(
+    settings, remote_error, expected_code
+):
+    class BrokenLists(FakeReminders):
+        def lists(self):
+            raise remote_error
+
+    svc = RemindersService(
+        settings,
+        service_factory=lambda _: SimpleNamespace(reminders=BrokenLists()),
+        sleep=lambda _: None,
+    )
+
+    with pytest.raises(AppError) as exc:
+        svc.list_lists()
+
+    assert exc.value.code == expected_code
+
+
+def test_temporary_data_access_approval_payload_is_exact_and_sanitized(
+    settings, caplog, monkeypatch
+):
+    from apple_reminders_mcp import server as server_module
+
+    sensitive_values = (
+        "private.user@example.com",
+        "session-token-secret",
+        "cookie-secret",
+    )
+
+    class ApprovalRequired(FakeReminders):
+        def lists(self):
+            raise RemindersApiError(
+                "request denied",
+                payload={
+                    "isDeviceConsentedForPCS": False,
+                    "apple_id": sensitive_values[0],
+                    "session_token": sensitive_values[1],
+                    "cookie": sensitive_values[2],
+                },
+            )
+
+    svc = RemindersService(
+        settings,
+        service_factory=lambda _: SimpleNamespace(reminders=ApprovalRequired()),
+        sleep=lambda _: None,
+    )
+
+    monkeypatch.setattr(server_module, "service", lambda: svc)
+    with caplog.at_level("ERROR"):
+        payload = server_module.invoke("list_lists")
+
+    assert payload == {
+        "ok": False,
+        "error": {
+            "code": "ICLOUD_DATA_ACCESS_APPROVAL_REQUIRED",
+            "message": "Apple requires approval from a trusted device before Reminders can be accessed.",
+            "operator_hint": (
+                "Check your trusted iPhone, iPad, or Mac and approve temporary access to "
+                "iCloud data, then retry the operation."
+            ),
+            "retryable": True,
+        },
+    }
+    public_and_logs = f"{payload} {caplog.text}"
+    assert all(secret not in public_and_logs for secret in sensitive_values)
+
+
+def test_temporary_data_access_evidence_wins_over_generic_http_403(settings):
+    response = Response()
+    response.status_code = 403
+    response.reason = "Forbidden"
+    response.headers["Content-Type"] = "application/json"
+    response._content = b'{"message":"Cookies not available yet on server."}'
+
+    class ApprovalRequired(FakeReminders):
+        def lists(self):
+            raise PyiCloudAPIResponseException("Forbidden", 403, response)
+
+    svc = RemindersService(
+        settings,
+        service_factory=lambda _: SimpleNamespace(reminders=ApprovalRequired()),
+    )
+
+    with pytest.raises(AppError) as exc:
+        svc.list_lists()
+
+    assert exc.value.code == "ICLOUD_DATA_ACCESS_APPROVAL_REQUIRED"
+
+
+def test_temporary_data_access_failure_does_not_retry_write(settings):
+    class ApprovalOnCreate(FakeReminders):
+        create_attempts = 0
+
+        def create(self, list_id, title, **kwargs):
+            self.create_attempts += 1
+            raise PyiCloudPCSTimeoutException("Unable to request PCS access!")
+
+    reminders = ApprovalOnCreate()
+    svc = RemindersService(
+        settings,
+        service_factory=lambda _: SimpleNamespace(reminders=reminders),
+        sleep=lambda _: None,
+    )
+
+    with pytest.raises(AppError) as exc:
+        svc.create("Not retried", "l1")
+
+    assert exc.value.code == "ICLOUD_DATA_ACCESS_APPROVAL_REQUIRED"
+    assert reminders.create_attempts == 1
+
+
+def test_temporary_data_access_during_service_initialization_is_classified(settings):
+    class ApprovalDuringInitialization:
+        @property
+        def reminders(self):
+            try:
+                raise PyiCloudPCSTimeoutException("Unable to request PCS access!")
+            except PyiCloudPCSTimeoutException as exc:
+                raise RuntimeError("pyicloud service initialization failed") from exc
+
+    svc = RemindersService(
+        settings,
+        service_factory=lambda _: ApprovalDuringInitialization(),
+        sleep=lambda _: None,
+    )
+
+    with pytest.raises(AppError) as exc:
+        svc.list_lists()
+
+    assert exc.value.code == "ICLOUD_DATA_ACCESS_APPROVAL_REQUIRED"
+
+
+def test_ambiguous_pcs_failure_keeps_generic_fallback(settings):
+    class AmbiguousPcsFailure(FakeReminders):
+        def lists(self):
+            raise RemindersApiError("Unable to request PCS access!")
+
+    svc = RemindersService(
+        settings,
+        service_factory=lambda _: SimpleNamespace(reminders=AmbiguousPcsFailure()),
+    )
+
+    with pytest.raises(AppError) as exc:
+        svc.list_lists()
+
+    assert exc.value.code == "ICLOUD_UNAVAILABLE"
+
+
+def test_existing_reminder_read_and_write_flow_is_unchanged(service):
+    assert [item["reminder_id"] for item in service.list_items("l1")] == ["r1"]
+    created = service.create("Still writable", "l1")
+    assert created["title"] == "Still writable"
+    assert service.get_item(created["reminder_id"])["list_id"] == "l1"
 
 
 def test_unexpected_mcp_error_is_logged_but_public_response_is_sanitized(monkeypatch, caplog):

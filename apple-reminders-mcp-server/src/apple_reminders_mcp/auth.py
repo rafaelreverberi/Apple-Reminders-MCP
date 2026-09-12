@@ -5,7 +5,12 @@ from collections.abc import Callable
 from typing import Any
 
 from .config import Settings
-from .errors import REAUTH_HINT, AppError
+from .errors import (
+    ICLOUD_DATA_ACCESS_APPROVAL_HINT,
+    REAUTH_HINT,
+    AppError,
+    classify_icloud_error,
+)
 
 _DEFAULT_ICLOUD_TIMEOUT = (10.0, 60.0)
 
@@ -90,26 +95,41 @@ def sanitized_status(settings: Settings, factory=create_saved_session) -> dict[s
         "requires_2fa": False,
         "requires_2sa": False,
         "requires_reauthentication": True,
+        "requires_icloud_data_access_approval": False,
+        "session_state": "reauthentication_required",
         "china_mainland": settings.china_mainland,
         "reminders_available": False,
     }
     try:
         api = factory(settings)
         status = api.get_auth_status()
+        trusted = bool(status.get("authenticated") and status.get("trusted_session"))
         base.update(
             {
                 "authenticated": bool(status.get("authenticated")),
                 "trusted_session": bool(status.get("trusted_session")),
                 "requires_2fa": bool(status.get("requires_2fa")),
                 "requires_2sa": bool(status.get("requires_2sa")),
-                "requires_reauthentication": not bool(
-                    status.get("authenticated") and status.get("trusted_session")
-                ),
-                "reminders_available": getattr(api, "reminders", None) is not None,
+                "requires_reauthentication": not trusted,
+                "session_state": "trusted" if trusted else "reauthentication_required",
             }
         )
-    except AppError:
-        base["operator_hint"] = REAUTH_HINT
-    except Exception:
-        base["error_code"] = "ICLOUD_UNAVAILABLE"
+        base["reminders_available"] = getattr(api, "reminders", None) is not None
+    except Exception as exc:
+        error = exc if isinstance(exc, AppError) else classify_icloud_error(exc)
+        base["error_code"] = error.code
+        base.update(error.details)
+        if error.code == "ICLOUD_DATA_ACCESS_APPROVAL_REQUIRED":
+            base.update(
+                {
+                    "requires_reauthentication": False,
+                    "requires_icloud_data_access_approval": True,
+                    "session_state": "icloud_data_access_approval_required",
+                    "operator_hint": ICLOUD_DATA_ACCESS_APPROVAL_HINT,
+                }
+            )
+        elif error.code == "REAUTHENTICATION_REQUIRED":
+            base["operator_hint"] = REAUTH_HINT
+        else:
+            base["session_state"] = error.code.casefold()
     return base
