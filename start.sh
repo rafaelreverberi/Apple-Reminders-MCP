@@ -10,7 +10,11 @@ CLEANED=0
 OWNS_LOCK=0
 fail(){ printf 'Error: %s\n' "$*" >&2; exit 1; }
 [ -f "$ENV_FILE" ] || fail "Missing .env; run ./setup.sh"
-perm=$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE")
+if [ "$(uname -s)" = Linux ]; then
+  perm=$(stat -c '%a' "$ENV_FILE")
+else
+  perm=$(stat -f '%Lp' "$ENV_FILE")
+fi
 [ "$perm" = 600 ] || fail ".env permissions must be 600 (currently $perm)"
 set -a
 . "$ENV_FILE"
